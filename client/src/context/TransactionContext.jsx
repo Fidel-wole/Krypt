@@ -1,26 +1,30 @@
 import React, { createContext, useState, useEffect } from "react";
-import { ethers } from "ethers";
+import Web3 from 'web3';
 import { contractABI, contractAddress } from "../utils/constants";
 
 const { ethereum } = window;
 
 export const TransactionContext = createContext();
 
-const createEthereumContract = async (ethereum) => {
+let web3;
+if (typeof window !== 'undefined' && typeof window.ethereum !== 'undefined') {
+  web3 = new Web3(window.ethereum);
+} else {
+  const provider = new Web3.providers.HttpProvider(
+    'https://mainnet.infura.io/v3/YOUR_INFURA_PROJECT_ID'
+  );
+  web3 = new Web3(provider);
+}
+
+const createEthereumContract = async () => {
   if (!ethereum) {
     throw new Error("MetaMask not detected. Please install MetaMask.");
   }
 
   try {
-    const provider = new ethers.BrowserProvider(ethereum);
-    const signer = provider.getSigner();
-    const transactionsContract = new ethers.Contract(
-      contractAddress,
-      contractABI,
-      signer
-    );
-
-    return transactionsContract;
+    const provider = new Web3(ethereum);
+    const contract = new provider.eth.Contract(contractABI, contractAddress);
+    return { transactionsContract: contract, web3: provider };
   } catch (error) {
     console.error("Error creating Ethereum contract:", error);
     throw new Error("Failed to create Ethereum contract.");
@@ -48,23 +52,18 @@ const TransactionProvider = ({ children }) => {
   const getAllTransactions = async () => {
     try {
       if (ethereum) {
-        const transactionsContract = await createEthereumContract(ethereum);
+        const { transactionsContract } = await createEthereumContract();
 
-        const availableTransactions =
-          await transactionsContract.getAllTransactions();
+        const availableTransactions = await transactionsContract.methods.getAllTransactions().call();
 
-        const structuredTransactions = availableTransactions.map(
-          (transaction) => ({
-            addressTo: transaction.receiver,
-            addressFrom: transaction.sender,
-            timestamp: new Date(
-              transaction.timestamp.toNumber() * 1000
-            ).toLocaleString(),
-            message: transaction.message,
-            keyword: transaction.keyword,
-            amount: parseInt(transaction.amount._hex) / 10 ** 18,
-          })
-        );
+        const structuredTransactions = availableTransactions.map((transaction) => ({
+          addressTo: transaction.receiver,
+          addressFrom: transaction.sender,
+          timestamp: new Date(transaction.timestamp * 1000).toLocaleString(),
+          message: transaction.message,
+          keyword: transaction.keyword,
+          amount: web3.utils.fromWei(transaction.amount, "ether"),
+        }));
 
         console.log(structuredTransactions);
 
@@ -98,18 +97,13 @@ const TransactionProvider = ({ children }) => {
   const checkIfTransactionsExist = async () => {
     try {
       if (ethereum) {
-        const transactionsContract = await createEthereumContract(ethereum);
-        const currentTransactionCount =
-          await transactionsContract.getTransactionCount();
+        const { transactionsContract } = await createEthereumContract();
+        const currentTransactionCount = await transactionsContract.methods.getTransactionCount().call();
 
-        window.localStorage.setItem(
-          "transactionCount",
-          currentTransactionCount
-        );
+        window.localStorage.setItem("transactionCount", currentTransactionCount);
       }
     } catch (error) {
       console.log(error);
-
       throw new Error("No ethereum object");
     }
   };
@@ -126,66 +120,61 @@ const TransactionProvider = ({ children }) => {
       window.location.reload();
     } catch (error) {
       console.log(error);
-
       throw new Error("No ethereum object");
     }
   };
 
   const sendTransaction = async () => {
     try {
-      if (!ethereum) {
-        throw new Error(
-          "Ethereum object not found. Make sure MetaMask or another Ethereum provider is installed and active."
-        );
+      const { addressTo, amount, keyword, message } = formData;
+
+      if (!addressTo || !amount || !keyword || !message) {
+        throw new Error("Please fill in all fields.");
       }
 
-      const { addressTo, amount, keyword, message } = formData;
-      const transactionsContract = await createEthereumContract(ethereum);
-      console.log("ethers:", ethers); // Check if ethers is defined
-      const parsedAmount = ethers.parseEther(amount); // Ensure ethers.utils is accessible
+      const parsedAmount = web3.utils.toWei(amount.toString(), "ether");
 
-      // Send transaction to Ethereum network
+      const { transactionsContract } = await createEthereumContract();
+
       const txParams = {
         from: currentAccount,
         to: addressTo,
-        gas: "0x5208", // Example gas limit
-        value: parsedAmount._hex,
+        gas: "21000",
+        value: parsedAmount,
       };
 
-      const transactionHash = await ethereum.request({
-        method: "eth_sendTransaction",
-        params: [txParams],
-      });
+      console.log("Transaction parameters:", txParams);
 
       setIsLoading(true);
-      console.log(`Transaction sent - ${transactionHash}`);
 
-      // Wait for transaction to be mined
-      const receipt = await transactionHash.wait();
-      console.log(`Transaction confirmed - ${transactionHash}`);
+      web3.eth.sendTransaction(txParams)
+        .on('transactionHash', function (hash) {
+          console.log(`Transaction sent - ${hash}`);
+        })
+        .on('receipt', async function (receipt) {
+          console.log(`Transaction confirmed - ${receipt.transactionHash}`);
+          setIsLoading(false);
 
-      setIsLoading(false);
+          const txResponse = await transactionsContract.methods.addToBlockchain(
+            addressTo,
+            parsedAmount,
+            message,
+            keyword
+          ).send({ from: currentAccount });
 
-      // Call contract method to add transaction details
-      const txResponse = await transactionsContract.addToBlockchain(
-        addressTo,
-        parsedAmount,
-        message,
-        keyword
-      );
+          console.log("Transaction details added to contract:", txResponse);
 
-      console.log("Transaction details added to contract:", txResponse);
-
-      // Update transaction count
-      const transactionsCount =
-        await transactionsContract.getTransactionCount();
-      setTransactionCount(transactionsCount.toNumber());
-
-      // Optionally, notify user or update UI on successful transaction
+          const transactionsCount = await transactionsContract.methods.getTransactionCount().call();
+          setTransactionCount(parseInt(transactionsCount));
+        })
+        .on('error', function (error) {
+          console.error("Error sending transaction:", error.message);
+          setIsLoading(false);
+        });
     } catch (error) {
       console.error("Error sending transaction:", error.message);
+      setIsLoading(false);
       // Handle error state or notify the user
-      // Example: setErrorMessage(error.message);
     }
   };
 
