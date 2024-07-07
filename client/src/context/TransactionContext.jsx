@@ -142,7 +142,7 @@ const TransactionProvider = ({ children }) => {
       const { addressTo, amount, keyword, message } = formData;
       const transactionsContract = await createEthereumContract(ethereum);
       console.log("ethers:", ethers); // Check if ethers is defined
-      const parsedAmount = ethers.utils.parseEther(amount); // Ensure ethers.utils is accessible
+      const parsedAmount = ethers.parseEther(amount); // Ensure ethers.utils is accessible
 
       // Send transaction to Ethereum network
       const txParams = {
